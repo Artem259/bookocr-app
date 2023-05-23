@@ -1,5 +1,6 @@
 import argparse
 import concurrent.futures
+import multiprocessing
 import os.path
 import sys
 import time
@@ -25,7 +26,7 @@ def parse_arguments():
 
 def get_image_paths(path):
     if os.path.isfile(path):
-        return [path]
+        return [str(path)]
     elif os.path.isdir(path):
         image_paths = [os.path.join(path, file_name) for file_name in os.listdir(path)]
         image_paths = [file_path for file_path in image_paths if os.path.isfile(file_path)]
@@ -53,10 +54,10 @@ def process_image(image_path):
         start_time = time.time()
         ocr.image_ocr(image_path)
         res_time = time.time() - start_time
-        print(f'{image_name}:   {round(res_time, 3)} sec')
+        print(f' > {image_name}:   {round(res_time, 3)} sec')
     except FileNotFoundError:
-        print(f'{image_name}:   Not an image')
-        return 0
+        print(f' > {image_name}:   Not an image')
+        return
 
     if not args.s:
         if not target_folder.exists():
@@ -65,10 +66,9 @@ def process_image(image_path):
         with open(target_folder / "output.txt", "w") as f:
             f.write(result)
 
-    return res_time
-
 
 if __name__ == '__main__':
+    multiprocessing.freeze_support()
     args = parse_arguments()
     images = get_image_paths(Path(args.source))
 
@@ -83,20 +83,13 @@ if __name__ == '__main__':
     if not images:
         print("Source path not found.")
         sys.exit()
+    start_time = time.perf_counter()
     if args.m:
-        start_time = time.perf_counter()
-        with concurrent.futures.ProcessPoolExecutor() as exe:
-            times_gen = exe.map(process_image, images)
-
-            times = []
-            for i, v in enumerate(times_gen):
-                times.append(v)
-        res_time = time.perf_counter() - start_time
-        print(f'Total CPU time:   {round(sum(times), 3)} sec')
-        print(f'Total real time:   {round(res_time, 3)} sec')
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            futures = [executor.submit(process_image, image) for image in images]
+            concurrent.futures.wait(futures)
     else:
-        times = []
         for i in images:
             v = process_image(i)
-            times.append(v)
-        print(f'Total time:   {round(sum(times), 3)} sec')
+    res_time = time.perf_counter() - start_time
+    print(f'Total real time:   {round(res_time, 3)} sec')
