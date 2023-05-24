@@ -36,6 +36,7 @@ def get_image_paths(path):
 
 def process_image(image_path):
     args = parse_arguments()
+    start_time = time.time()
 
     config = OcrConfig()
     stats_config = OcrStatsConfig()
@@ -51,10 +52,7 @@ def process_image(image_path):
     ocr = Ocr(config, stats_config)
 
     try:
-        start_time = time.time()
         ocr.image_ocr(image_path)
-        res_time = time.time() - start_time
-        print(f' > {image_name}:   {round(res_time, 3)} sec')
     except FileNotFoundError:
         print(f' > {image_name}:   Not an image')
         return
@@ -65,6 +63,8 @@ def process_image(image_path):
         result = ocr.get_data_as_text()
         with open(target_folder / "output.txt", "w") as f:
             f.write(result)
+    res_time = time.time() - start_time
+    print(f' > {image_name}:   {round(res_time, 3)} sec')
 
 
 if __name__ == '__main__':
@@ -85,11 +85,10 @@ if __name__ == '__main__':
         sys.exit()
     start_time = time.perf_counter()
     if args.m:
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            futures = [executor.submit(process_image, image) for image in images]
-            concurrent.futures.wait(futures)
+        with concurrent.futures.ProcessPoolExecutor() as exe:
+            exe.map(process_image, images)
     else:
         for i in images:
-            v = process_image(i)
+            process_image(i)
     res_time = time.perf_counter() - start_time
-    print(f'Total real time:   {round(res_time, 3)} sec')
+    print(f'Total time:   {round(res_time, 3)} sec')
