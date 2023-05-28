@@ -1,2 +1,3 @@
 bookocr~=1.0.3
+PyQt5~=5.15.9
 pyinstaller~=5.11.0
