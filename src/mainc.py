@@ -5,7 +5,6 @@ import os.path
 import sys
 import time
 from pathlib import Path
-
 from bookocr.ocr import Ocr
 from bookocr.config import OcrConfig
 from bookocr.stats_config import OcrStatsConfig
