@@ -157,3 +157,5 @@ cython_debug/
 
 
 /src/data/
+/src/images/
+/src/out/

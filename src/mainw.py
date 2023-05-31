@@ -1,13 +1,14 @@
+import concurrent.futures
 import json
-import math
 import os.path
+import shutil
 import sys
+import time
 from pathlib import Path
-
-from PyQt5.QtCore import Qt, QRect
-from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import QApplication, QLabel, QVBoxLayout, QSlider, QTabWidget, QPushButton, QCheckBox, \
-    QColorDialog, QDoubleSpinBox, QSpinBox, QHBoxLayout, QGridLayout, QScrollArea, QSizePolicy, QFileDialog
+from PyQt5.QtCore import Qt, QRunnable, pyqtSlot, QThreadPool, QUrl
+from PyQt5.QtGui import QFont, QIcon, QPixmap, QDesktopServices
+from PyQt5.QtWidgets import QApplication, QLabel, QVBoxLayout, QPushButton, QCheckBox, QColorDialog, \
+    QDoubleSpinBox, QSpinBox, QGridLayout, QScrollArea, QFileDialog, QTableWidgetItem, QHeaderView
 from PyQt5.QtWidgets import QWidget
 from PyQt5 import uic
 from bookocr.ocr import Ocr
@@ -37,15 +38,50 @@ def read_json_file(file_path):
         return None
 
 
+def process_image(data):
+    stats_config: OcrStatsConfig
+    image_path, config, stats_config, save_stats, target_folder = data
+    target_folder = Path(target_folder) / os.path.basename(image_path)
+
+    if save_stats:
+        stats_config.set_enabled_true(target_folder)
+
+    start_time = time.perf_counter()
+    ocr = Ocr(config, stats_config)
+    try:
+        ocr.image_ocr(image_path)
+    except (Exception, ):
+        return False, image_path, time.time() - start_time
+
+    if not stats_config.is_enabled:
+        if not target_folder.exists():
+            target_folder.mkdir(parents=True)
+        result = ocr.get_data_as_text()
+        with open(target_folder / "output.txt", "w") as f:
+            f.write(result)
+    res_time = round(time.perf_counter() - start_time, 2)
+    return True, image_path, res_time
+
+
 class MainWidget(QWidget):
     def __init__(self):
         super().__init__()
         uic.loadUi("gui.ui", self)
+        self.threadpool = QThreadPool()
 
         self.files = []
+        self.prev_files = []
         self.config = OcrConfig()
         self.stats_config = OcrStatsConfig()
         self.init()
+
+        self.tableWidget.clearContents()
+        self.tableWidget.setRowCount(0)
+        self.tableWidget.setColumnWidth(0, 10)
+        self.tableWidget.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.tableWidget.setColumnWidth(3, 10)
+        self.tableWidget.setColumnWidth(4, 10)
+        self.tableWidget.itemClicked.connect(self.table_item_clicked)
 
         layout = QVBoxLayout()
         layout.addWidget(self.json_to_widget(self.config.to_json()))
@@ -59,6 +95,7 @@ class MainWidget(QWidget):
         self.tabsWidget.setCurrentIndex(0)
 
         self.pathButton.clicked.connect(self.select_path_dialog)
+        self.runButton.clicked.connect(self.run_clicked)
         self.restoreButton.clicked.connect(self.restore_clicked)
         self.applyButton.clicked.connect(self.apply_clicked)
         self.restoreDefaultsButton.clicked.connect(self.restore_defaults_clicked)
@@ -118,11 +155,31 @@ class MainWidget(QWidget):
         files, _ = QFileDialog.getOpenFileNames(self, "Select Files")
         if files:
             self.files = files
-            self.runButton.setEnabled(True)
             self.update_files_line()
 
     def update_files_line(self):
-        self.pathLine.setText(", ".join(self.files))
+        files = [os.path.basename(path) for path in self.files]
+        self.pathLine.setText(", ".join(files))
+        if len(self.files) == 0:
+            self.runButton.setEnabled(False)
+        else:
+            self.runButton.setEnabled(True)
+
+    def table_item_clicked(self, item):
+        row = item.row()
+        if row > len(self.prev_files) - 1:
+            return
+        if item.column() == 3:
+            path = os.path.join("out", os.path.basename(self.prev_files[row]))
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        if item.column() == 4:
+            path = os.path.join("out", os.path.basename(self.prev_files[row]), "output.txt")
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def run_clicked(self):
+        self.prev_files = self.files
+        worker = Worker(self)
+        self.threadpool.start(worker)
 
     def restore_clicked(self):
         self.update_widget_from_object(self.configTab, self.config)
@@ -295,6 +352,78 @@ class MainWidget(QWidget):
             if saved_value != default_value:
                 font = QFont(label_widget.font().family(), label_widget.font().pointSize(), QFont.DemiBold)
                 label_widget.setFont(font)
+
+    def handle_table_row(self, row, flag, image_name, time_v):
+        self.tableWidget.setRowCount(self.tableWidget.rowCount() + 1)
+        self.tableWidget.setItem(row, 1, QTableWidgetItem(image_name))
+        if not flag:
+            icon = QIcon(QPixmap(str(Path("resources/failure.png"))))
+            item = QTableWidgetItem()
+            item.setIcon(icon)
+            self.tableWidget.setItem(row, 0, item)
+        else:
+            icon = QIcon(QPixmap(str(Path("resources/success.png"))))
+            item = QTableWidgetItem()
+            item.setIcon(icon)
+            self.tableWidget.setItem(row, 0, item)
+
+            item = QTableWidgetItem(str(time_v) + " sec")
+            item.setTextAlignment(Qt.AlignRight)
+            self.tableWidget.setItem(row, 2, item)
+
+            icon = QIcon(QPixmap(str(Path("resources/folder_2.png"))))
+            item = QTableWidgetItem()
+            item.setIcon(icon)
+            self.tableWidget.setItem(row, 3, item)
+
+            icon = QIcon(QPixmap(str(Path("resources/txt.png"))))
+            item = QTableWidgetItem()
+            item.setIcon(icon)
+            self.tableWidget.setItem(row, 4, item)
+        self.tableWidget.viewport().update()
+
+
+class Worker(QRunnable):
+    def __init__(self, window: MainWidget):
+        super().__init__()
+        self.w = window
+
+    @pyqtSlot()
+    def run(self):
+        self.w.tabsContainerWidget.setEnabled(False)
+        self.w.panelContainerWidget.setEnabled(False)
+
+        self.w.tableWidget.clearContents()
+        self.w.tableWidget.setRowCount(0)
+        self.w.tableWidget.setColumnCount(5)
+
+        self.w.stats_config.set_enabled_false()
+        if os.path.exists("out"):
+            shutil.rmtree("out")
+
+        data = []
+        for i in range(len(self.w.files)):
+            data.append((self.w.files[i], self.w.config, self.w.stats_config, self.w.statsCheckBox.isChecked(), "out"))
+
+        start_time = time.perf_counter()
+        if self.w.multiprocessingCheckBox.isChecked():
+            with concurrent.futures.ProcessPoolExecutor() as exe:
+                results = exe.map(process_image, data)
+                for i, (flag, image_path, time_v) in enumerate(results):
+                    self.w.handle_table_row(i, flag, os.path.basename(image_path), time_v)
+        else:
+            for i, v in enumerate(data):
+                flag, image_path, time_v = process_image(v)
+                self.w.handle_table_row(i, flag, os.path.basename(image_path), time_v)
+        res_time = round(time.perf_counter() - start_time, 2)
+
+        self.w.tableWidget.setRowCount(self.w.tableWidget.rowCount() + 1)
+        item = QTableWidgetItem(str(res_time) + " sec")
+        item.setTextAlignment(Qt.AlignRight)
+        self.w.tableWidget.setItem(len(self.w.files), 2, item)
+
+        self.w.tabsContainerWidget.setEnabled(True)
+        self.w.panelContainerWidget.setEnabled(True)
 
 
 if __name__ == '__main__':
