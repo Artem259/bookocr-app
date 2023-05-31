@@ -153,3 +153,7 @@ cython_debug/
 
 # PyCharm
 .idea/
+
+
+
+/src/data/
